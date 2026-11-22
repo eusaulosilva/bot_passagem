@@ -44,6 +44,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           MODO_LOOP_LOCAL: 'false'
           NOTIFICAR_SEMPRE: 'false'
+          TZ: 'America/Sao_Paulo'
         run: python bot.py
 
       - name: Salvar estado atualizado

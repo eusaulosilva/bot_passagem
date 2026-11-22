@@ -5,9 +5,15 @@ import os
 import re
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+try:
+    FUSO_BRASILIA = ZoneInfo("America/Sao_Paulo")
+except ZoneInfoNotFoundError:
+    FUSO_BRASILIA = timezone(timedelta(hours=-3))
 
 import requests
 from dotenv import load_dotenv
@@ -397,7 +403,7 @@ def enviar_alerta_telegram(resultado: dict[str, Any], motivo: str = "nova") -> b
     empresas = html.escape(_normalizar_empresas(resultado.get("mencoes_empresa", [])))
     precos = resultado.get("precos", [])
     precos_formatados = html.escape(", ".join(precos)) if precos else "Não identificado na listagem"
-    horario_verificacao = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    horario_verificacao = datetime.now(FUSO_BRASILIA).strftime("%d/%m/%Y %H:%M:%S")
     titulo = "💰 <b>PREÇOS ATUALIZADOS!</b>" if motivo == "preco_alterado" else "🚌 <b>PASSAGEM LIBERADA!</b>"
 
     mensagem = (
@@ -458,7 +464,7 @@ def executar_verificacao(
         finally:
             browser.close()
 
-    agora_iso = datetime.now().isoformat(timespec="seconds")
+    agora_iso = datetime.now(FUSO_BRASILIA).isoformat(timespec="seconds")
 
     for res in resultados:
         site = res["site"]
