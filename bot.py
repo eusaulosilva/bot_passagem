@@ -31,7 +31,7 @@ logger = logging.getLogger("bot_passagem")
 
 # URLs padrão para o trecho Brasília - DF -> Santa Rita de Cássia - BA em 18/12/2026
 DEFAULT_URL_GUANABARA = (
-    "https://viajeguanabara.com.br/onibus/brasilia-df/santa_rita_de_cassia-ba/"
+    "https://viajeguanabara.com.br/onibus/brasilia-df-todos/santa_rita_de_cassia-ba/"
     "?departure_date=2026-12-18&passengers=13:1"
 )
 DEFAULT_URL_CLICKBUS = (
