@@ -8,6 +8,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 try:
@@ -386,6 +387,21 @@ def deve_enviar_alerta(
     return False, "ja_notificado"
 
 
+def _extrair_data_viagem(url: str) -> str:
+    """Extrai a data da viagem da URL (departure_date ou departureDate) no formato DD/MM/AAAA."""
+    try:
+        params = parse_qs(urlparse(url).query)
+        bruta = (params.get("departure_date") or params.get("departureDate") or [""])[0].strip()
+        if not bruta:
+            match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", url)
+            bruta = match.group(1) if match else ""
+        if bruta:
+            return datetime.strptime(bruta, "%Y-%m-%d").strftime("%d/%m/%Y")
+    except ValueError:
+        pass
+    return "Não identificada"
+
+
 def enviar_alerta_telegram(resultado: dict[str, Any], motivo: str = "nova") -> bool:
     """Envia um alerta formatado em HTML para o Telegram informando a disponibilidade."""
     token = os.getenv("TELEGRAM_TOKEN", "").strip()
@@ -400,6 +416,7 @@ def enviar_alerta_telegram(resultado: dict[str, Any], motivo: str = "nova") -> b
 
     site = html.escape(resultado["site"])
     url = html.escape(resultado["url"], quote=True)
+    data_viagem = html.escape(_extrair_data_viagem(resultado["url"]))
     empresas = html.escape(_normalizar_empresas(resultado.get("mencoes_empresa", [])))
     precos = resultado.get("precos", [])
     precos_formatados = html.escape(", ".join(precos)) if precos else "Não identificado na listagem"
@@ -410,6 +427,7 @@ def enviar_alerta_telegram(resultado: dict[str, Any], motivo: str = "nova") -> b
         f"{titulo}\n\n"
         f"🌐 <b>Site:</b> {site}\n"
         f"📍 <b>Trecho:</b> Brasília - DF ➔ Santa Rita de Cássia - BA\n"
+        f"📅 <b>Data da viagem:</b> {data_viagem}\n"
         f"🏢 <b>Viação:</b> {empresas}\n"
         f"💰 <b>Preços encontrados:</b> {precos_formatados}\n"
         f"🕒 <b>Verificado em:</b> {horario_verificacao}\n\n"
