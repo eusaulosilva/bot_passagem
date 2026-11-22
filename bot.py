@@ -226,12 +226,69 @@ def _normalizar_tipo_passagem(bruto: str) -> str:
     return mapa.get(chave, bruto.strip().title())
 
 
+PADRAO_DURACAO_HM = re.compile(r"\b(\d{1,2})\s*h\s*(\d{1,2})\s*m\b", re.IGNORECASE)
+PADRAO_DURACAO_RELOGIO = re.compile(r"\b(\d{1,2}):(\d{2})\s*🕒")
+PADRAO_LINHA_HORA = re.compile(r"^([01]?\d|2[0-3]):[0-5]\d(?:\(\+\d+\))?$")
+PADRAO_LOCAL_SAIDA = re.compile(
+    r"rodovi[aá]ria|terminal|embarque|asa[\s-]?sul|smas",
+    re.IGNORECASE,
+)
+PADRAO_DESTINO = re.compile(r"santa\s+rita|c[aá]ssia", re.IGNORECASE)
+
+
+def _extrair_detalhes_card(card_text: str) -> dict[str, str]:
+    """Extrai horário de saída, chegada, duração e local de saída de um card de viagem."""
+    linhas = [re.sub(r"\s+", " ", linha).strip() for linha in card_text.splitlines()]
+    linhas = [linha for linha in linhas if linha]
+
+    duracao = ""
+    match_hm = PADRAO_DURACAO_HM.search(card_text)
+    if match_hm:
+        duracao = f"{int(match_hm.group(1))}h {int(match_hm.group(2)):02d}m"
+    else:
+        match_relogio = PADRAO_DURACAO_RELOGIO.search(card_text)
+        if match_relogio:
+            duracao = f"{int(match_relogio.group(1))}h {int(match_relogio.group(2)):02d}m"
+
+    horas_linhas: list[tuple[int, str]] = []
+    for i, linha in enumerate(linhas):
+        if PADRAO_LINHA_HORA.match(linha):
+            horas_linhas.append((i, linha))
+
+    horario_saida = horas_linhas[0][1] if horas_linhas else ""
+    horario_chegada = horas_linhas[1][1] if len(horas_linhas) >= 2 else ""
+
+    if not horario_saida:
+        match_hora = PADRAO_HORARIO.search(card_text)
+        horario_saida = match_hora.group(0) if match_hora else ""
+
+    local_saida = ""
+    for linha in linhas:
+        if PADRAO_LOCAL_SAIDA.search(linha) and not PADRAO_DESTINO.search(linha):
+            local_saida = linha
+            break
+
+    if not local_saida and horas_linhas:
+        idx_proxima = horas_linhas[0][0] + 1
+        if idx_proxima < len(linhas):
+            candidato = linhas[idx_proxima]
+            if not PADRAO_PRECO.search(candidato) and not PADRAO_DESTINO.search(candidato):
+                local_saida = candidato
+
+    return {
+        "horario": horario_saida,
+        "chegada": horario_chegada,
+        "duracao": duracao,
+        "local_saida": local_saida,
+    }
+
+
 def _extrair_opcoes_cards(page: Page, seletores: list[str]) -> list[dict[str, str]]:
-    """Extrai tipo de passagem, horário e preço de cada card de viagem visível."""
+    """Extrai tipo de passagem, horário, duração, local de saída e preço de cada card visível."""
     seletor_combinado = ", ".join(seletores)
     locator = page.locator(seletor_combinado)
     opcoes: list[dict[str, str]] = []
-    vistas: set[tuple[str, str, str]] = set()
+    vistas: set[tuple[str, str, str, str, str]] = set()
 
     try:
         total = locator.count()
@@ -249,16 +306,22 @@ def _extrair_opcoes_cards(page: Page, seletores: list[str]) -> list[dict[str, st
                     let melhorTexto = '';
                     for (let i = 0; i < 12 && cur && cur.parentElement; i++) {
                         cur = cur.parentElement;
+                        if (cur.tagName === 'MAIN' || cur.tagName === 'BODY') {
+                            break;
+                        }
                         const txt = cur.innerText || '';
                         const qtdPrecos = (txt.match(/R\\$\\s*\\d{1,3}(?:\\.\\d{3})*\\s*,\\s*\\d{2}/g) || []).length;
-                        if (qtdPrecos === 1 && /semi[-\\s]?leito|leito|executivo|convencional|cama/i.test(txt)) {
-                            return txt;
-                        }
-                        if (qtdPrecos === 1 && !melhorTexto) {
-                            melhorTexto = txt;
-                        }
                         if (qtdPrecos > 1) {
                             break;
+                        }
+                        if (qtdPrecos === 1) {
+                            melhorTexto = txt;
+                            const temClasse = /semi[-\\s]?leito|leito|executivo|convencional|cama/i.test(txt);
+                            const temHora = /\\b(?:[01]?\\d|2[0-3]):[0-5]\\d\\b/.test(txt);
+                            const temDuracaoOuLocal = /rodovi[aá]ria|\\d{1,2}\\s*h\\s*\\d{1,2}\\s*m|🕒/i.test(txt);
+                            if (temClasse && temHora && temDuracaoOuLocal) {
+                                return txt;
+                            }
                         }
                     }
                     return melhorTexto;
@@ -272,16 +335,29 @@ def _extrair_opcoes_cards(page: Page, seletores: list[str]) -> list[dict[str, st
                 continue
 
             match_tipo = PADRAO_TIPO_PASSAGEM.search(card_text)
-            match_hora = PADRAO_HORARIO.search(card_text)
-
             tipo = _normalizar_tipo_passagem(match_tipo.group(1)) if match_tipo else "Padrão"
-            horario = match_hora.group(0) if match_hora else ""
+            detalhes = _extrair_detalhes_card(card_text)
             preco = precos_card[0]
 
-            chave = (tipo, horario, preco)
+            chave = (
+                tipo,
+                detalhes["horario"],
+                detalhes["duracao"],
+                detalhes["local_saida"],
+                preco,
+            )
             if chave not in vistas:
                 vistas.add(chave)
-                opcoes.append({"tipo": tipo, "horario": horario, "preco": preco})
+                opcoes.append(
+                    {
+                        "tipo": tipo,
+                        "horario": detalhes["horario"],
+                        "chegada": detalhes["chegada"],
+                        "duracao": detalhes["duracao"],
+                        "local_saida": detalhes["local_saida"],
+                        "preco": preco,
+                    }
+                )
         except Exception:
             continue
 
@@ -513,20 +589,58 @@ def enviar_alerta_telegram(resultado: dict[str, Any], motivo: str = "nova") -> b
     horario_verificacao = datetime.now(FUSO_BRASILIA).strftime("%d/%m/%Y %H:%M:%S")
     titulo = "💰 <b>PREÇOS ATUALIZADOS!</b>" if motivo == "preco_alterado" else "🚌 <b>PASSAGEM LIBERADA!</b>"
 
+    linhas_viagem: list[str] = []
     if opcoes:
-        linhas_opcoes = []
-        for op in opcoes:
-            tipo = html.escape(op["tipo"])
-            preco = html.escape(op["preco"])
-            hora = html.escape(op["horario"])
-            if hora:
-                linhas_opcoes.append(f"  • <b>{tipo}</b> ({hora}) — {preco}")
-            else:
-                linhas_opcoes.append(f"  • <b>{tipo}</b> — {preco}")
+        locais = {op.get("local_saida", "") for op in opcoes if op.get("local_saida")}
+        horarios = {
+            (op.get("horario", ""), op.get("chegada", ""), op.get("duracao", ""))
+            for op in opcoes
+            if op.get("horario") or op.get("duracao")
+        }
+        mesma_viagem = len(locais) <= 1 and len(horarios) <= 1
+
+        if mesma_viagem:
+            if locais:
+                linhas_viagem.append(f"🚏 <b>Local de saída:</b> {html.escape(next(iter(locais)))}")
+            if horarios:
+                saida, chegada, duracao = next(iter(horarios))
+                partes_horario = []
+                if saida and chegada:
+                    partes_horario.append(f"⏰ <b>Horário:</b> {html.escape(saida)} ➔ {html.escape(chegada)}")
+                elif saida:
+                    partes_horario.append(f"⏰ <b>Saída:</b> {html.escape(saida)}")
+                if duracao:
+                    partes_horario.append(f"⏱️ <b>Duração:</b> {html.escape(duracao)}")
+                if partes_horario:
+                    linhas_viagem.append(" | ".join(partes_horario))
+
+            linhas_opcoes = [
+                f"  • <b>{html.escape(op['tipo'])}</b> — {html.escape(op['preco'])}"
+                for op in opcoes
+            ]
+        else:
+            linhas_opcoes = []
+            for op in opcoes:
+                tipo = html.escape(op["tipo"])
+                preco = html.escape(op["preco"])
+                extras = []
+                if op.get("horario") and op.get("chegada"):
+                    extras.append(f"{html.escape(op['horario'])}➔{html.escape(op['chegada'])}")
+                elif op.get("horario"):
+                    extras.append(html.escape(op["horario"]))
+                if op.get("duracao"):
+                    extras.append(html.escape(op["duracao"]))
+                if op.get("local_saida"):
+                    extras.append(html.escape(op["local_saida"]))
+                detalhe = f" ({' • '.join(extras)})" if extras else ""
+                linhas_opcoes.append(f"  • <b>{tipo}</b>{detalhe} — {preco}")
+
         bloco_valores = "💺 <b>Tipos e preços:</b>\n" + "\n".join(linhas_opcoes)
     else:
         precos_formatados = html.escape(", ".join(precos)) if precos else "Não identificado na listagem"
         bloco_valores = f"💰 <b>Preços encontrados:</b> {precos_formatados}"
+
+    bloco_info_viagem = ("\n".join(linhas_viagem) + "\n") if linhas_viagem else ""
 
     mensagem = (
         f"{titulo}\n\n"
@@ -534,6 +648,7 @@ def enviar_alerta_telegram(resultado: dict[str, Any], motivo: str = "nova") -> b
         f"📍 <b>Trecho:</b> Brasília - DF ➔ Santa Rita de Cássia - BA\n"
         f"📅 <b>Data da viagem:</b> {data_viagem}\n"
         f"🏢 <b>Viação:</b> {empresas}\n"
+        f"{bloco_info_viagem}"
         f"{bloco_valores}\n"
         f"🕒 <b>Verificado em:</b> {horario_verificacao}\n\n"
         f"👉 <a href=\"{url}\">Abrir página de compra</a>"
