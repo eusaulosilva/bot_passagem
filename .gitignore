@@ -1,0 +1,18 @@
+# Variáveis de ambiente
+.env
+.env.*
+!.env.example
+
+# Ambientes virtuais Python
+venv/
+.venv/
+
+# Cache Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Logs e saídas temporárias
+*.log
+logs/
+estado_monitoramento.json
