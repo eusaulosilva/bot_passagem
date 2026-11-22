@@ -601,7 +601,9 @@ def enviar_alerta_telegram(resultado: dict[str, Any], motivo: str = "nova") -> b
 
         if mesma_viagem:
             if locais:
-                linhas_viagem.append(f"🚏 <b>Local de saída:</b> {html.escape(next(iter(locais)))}")
+                linhas_viagem.append(
+                    f"🚏 <b>Local de saída:</b> <b><u>{html.escape(next(iter(locais)))}</u></b>"
+                )
             if horarios:
                 saida, chegada, duracao = next(iter(horarios))
                 partes_horario = []
@@ -615,27 +617,34 @@ def enviar_alerta_telegram(resultado: dict[str, Any], motivo: str = "nova") -> b
                     linhas_viagem.append(" | ".join(partes_horario))
 
             linhas_opcoes = [
-                f"  • <b>{html.escape(op['tipo'])}</b> — {html.escape(op['preco'])}"
+                f"  • <b>{html.escape(op['tipo'])}</b> — <b>{html.escape(op['preco'])}</b>"
                 for op in opcoes
             ]
+            bloco_valores = "💺 <b>Tipos e preços:</b>\n" + "\n".join(linhas_opcoes)
         else:
-            linhas_opcoes = []
+            grupos: dict[str, list[dict[str, str]]] = {}
             for op in opcoes:
-                tipo = html.escape(op["tipo"])
-                preco = html.escape(op["preco"])
-                extras = []
-                if op.get("horario") and op.get("chegada"):
-                    extras.append(f"{html.escape(op['horario'])}➔{html.escape(op['chegada'])}")
-                elif op.get("horario"):
-                    extras.append(html.escape(op["horario"]))
-                if op.get("duracao"):
-                    extras.append(html.escape(op["duracao"]))
-                if op.get("local_saida"):
-                    extras.append(html.escape(op["local_saida"]))
-                detalhe = f" ({' • '.join(extras)})" if extras else ""
-                linhas_opcoes.append(f"  • <b>{tipo}</b>{detalhe} — {preco}")
+                chave_local = op.get("local_saida") or "Local não informado"
+                grupos.setdefault(chave_local, []).append(op)
 
-        bloco_valores = "💺 <b>Tipos e preços:</b>\n" + "\n".join(linhas_opcoes)
+            blocos_grupos: list[str] = []
+            for local_nome, itens in grupos.items():
+                linhas_grupo = [f"🚏 <b><u>{html.escape(local_nome)}</u></b>"]
+                for op in itens:
+                    tipo = html.escape(op["tipo"])
+                    preco = html.escape(op["preco"])
+                    extras = []
+                    if op.get("horario") and op.get("chegada"):
+                        extras.append(f"{html.escape(op['horario'])} ➔ {html.escape(op['chegada'])}")
+                    elif op.get("horario"):
+                        extras.append(html.escape(op["horario"]))
+                    if op.get("duracao"):
+                        extras.append(html.escape(op["duracao"]))
+                    detalhe = f" ({' • '.join(extras)})" if extras else ""
+                    linhas_grupo.append(f"  • <b>{tipo}</b> — <b>{preco}</b>{detalhe}")
+                blocos_grupos.append("\n".join(linhas_grupo))
+
+            bloco_valores = "💺 <b>Opções por local de saída:</b>\n\n" + "\n\n".join(blocos_grupos)
     else:
         precos_formatados = html.escape(", ".join(precos)) if precos else "Não identificado na listagem"
         bloco_valores = f"💰 <b>Preços encontrados:</b> {precos_formatados}"
