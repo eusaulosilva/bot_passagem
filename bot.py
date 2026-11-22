@@ -40,6 +40,11 @@ DEFAULT_URL_CLICKBUS = (
 )
 
 PADRAO_PRECO = re.compile(r"R\$\s*(\d{1,3}(?:\.\d{3})*)\s*,\s*(\d{2})")
+PADRAO_TIPO_PASSAGEM = re.compile(
+    r"\b(leito\s+individual|leito\s+cama|semi[-\s]?leito|executivo|convencional|leito|cama)\b",
+    re.IGNORECASE,
+)
+PADRAO_HORARIO = re.compile(r"\b([01]?\d|2[0-3]):[0-5]\d\b")
 PADRAO_EMPRESA = re.compile(r"r[aá]pido\s*federal|guanabara", re.IGNORECASE)
 PADRAO_SEM_RESULTADOS = re.compile(
     r"nenhuma\s+viagem|nenhum\s+resultado\s+encontrado|"
@@ -206,6 +211,83 @@ def _detectar_mencao_empresa(page: Page, texto_principal: str) -> list[str]:
     return sorted(mencoes)
 
 
+def _normalizar_tipo_passagem(bruto: str) -> str:
+    """Padroniza o nome da classe/tipo da passagem."""
+    chave = re.sub(r"\s+", " ", bruto.strip().lower()).replace("semi leito", "semi-leito")
+    mapa = {
+        "semi-leito": "Semi-leito",
+        "leito": "Leito",
+        "leito individual": "Leito Individual",
+        "leito cama": "Leito Cama",
+        "executivo": "Executivo",
+        "convencional": "Convencional",
+        "cama": "Cama",
+    }
+    return mapa.get(chave, bruto.strip().title())
+
+
+def _extrair_opcoes_cards(page: Page, seletores: list[str]) -> list[dict[str, str]]:
+    """Extrai tipo de passagem, horário e preço de cada card de viagem visível."""
+    seletor_combinado = ", ".join(seletores)
+    locator = page.locator(seletor_combinado)
+    opcoes: list[dict[str, str]] = []
+    vistas: set[tuple[str, str, str]] = set()
+
+    try:
+        total = locator.count()
+    except Exception:
+        return opcoes
+
+    for idx in range(min(total, 50)):
+        elemento = locator.nth(idx)
+        try:
+            if not elemento.is_visible():
+                continue
+            card_text = elemento.evaluate(
+                """(btn) => {
+                    let cur = btn;
+                    let melhorTexto = '';
+                    for (let i = 0; i < 12 && cur && cur.parentElement; i++) {
+                        cur = cur.parentElement;
+                        const txt = cur.innerText || '';
+                        const qtdPrecos = (txt.match(/R\\$\\s*\\d{1,3}(?:\\.\\d{3})*\\s*,\\s*\\d{2}/g) || []).length;
+                        if (qtdPrecos === 1 && /semi[-\\s]?leito|leito|executivo|convencional|cama/i.test(txt)) {
+                            return txt;
+                        }
+                        if (qtdPrecos === 1 && !melhorTexto) {
+                            melhorTexto = txt;
+                        }
+                        if (qtdPrecos > 1) {
+                            break;
+                        }
+                    }
+                    return melhorTexto;
+                }"""
+            )
+            if not card_text:
+                continue
+
+            precos_card = extrair_precos(card_text)
+            if not precos_card:
+                continue
+
+            match_tipo = PADRAO_TIPO_PASSAGEM.search(card_text)
+            match_hora = PADRAO_HORARIO.search(card_text)
+
+            tipo = _normalizar_tipo_passagem(match_tipo.group(1)) if match_tipo else "Padrão"
+            horario = match_hora.group(0) if match_hora else ""
+            preco = precos_card[0]
+
+            chave = (tipo, horario, preco)
+            if chave not in vistas:
+                vistas.add(chave)
+                opcoes.append({"tipo": tipo, "horario": horario, "preco": preco})
+        except Exception:
+            continue
+
+    return opcoes
+
+
 def verificar_guanabara(browser: Browser, url: str) -> dict[str, Any]:
     """Verifica disponibilidade de passagens no site Viaje Guanabara."""
     resultado: dict[str, Any] = {
@@ -216,6 +298,7 @@ def verificar_guanabara(browser: Browser, url: str) -> dict[str, Any]:
         "mencoes_empresa": [],
         "botoes_compra": [],
         "precos": [],
+        "opcoes": [],
         "sem_resultados": False,
         "erro": None,
     }
@@ -234,6 +317,7 @@ def verificar_guanabara(browser: Browser, url: str) -> dict[str, Any]:
 
         empresa_detectada = len(mencoes) > 0
         disponivel = len(botoes) > 0 and empresa_detectada and not sem_resultados
+        opcoes = _extrair_opcoes_cards(page, SELETORES_BOTAO_COMPRA_GUANABARA) if disponivel else []
         precos = extrair_precos(texto_principal) if disponivel else []
 
         resultado.update(
@@ -243,15 +327,17 @@ def verificar_guanabara(browser: Browser, url: str) -> dict[str, Any]:
                 "mencoes_empresa": mencoes,
                 "botoes_compra": botoes,
                 "precos": precos,
+                "opcoes": opcoes,
                 "sem_resultados": sem_resultados,
             }
         )
 
         logger.info(
-            "[Viaje Guanabara] Disponível=%s | Botões=%d | Empresa=%s | Preços=%s | SemResultados=%s",
+            "[Viaje Guanabara] Disponível=%s | Botões=%d | Empresa=%s | Opções=%s | Preços=%s | SemResultados=%s",
             disponivel,
             len(botoes),
             mencoes,
+            [f"{o['tipo']} ({o['preco']})" for o in opcoes],
             precos,
             sem_resultados,
         )
@@ -274,6 +360,7 @@ def verificar_clickbus(browser: Browser, url: str) -> dict[str, Any]:
         "mencoes_empresa": [],
         "botoes_compra": [],
         "precos": [],
+        "opcoes": [],
         "sem_resultados": False,
         "erro": None,
     }
@@ -292,6 +379,7 @@ def verificar_clickbus(browser: Browser, url: str) -> dict[str, Any]:
 
         empresa_detectada = len(mencoes) > 0
         disponivel = len(botoes) > 0 and empresa_detectada and not sem_resultados
+        opcoes = _extrair_opcoes_cards(page, SELETORES_BOTAO_COMPRA_CLICKBUS) if disponivel else []
         precos = extrair_precos(texto_principal) if disponivel else []
 
         resultado.update(
@@ -301,15 +389,17 @@ def verificar_clickbus(browser: Browser, url: str) -> dict[str, Any]:
                 "mencoes_empresa": mencoes,
                 "botoes_compra": botoes,
                 "precos": precos,
+                "opcoes": opcoes,
                 "sem_resultados": sem_resultados,
             }
         )
 
         logger.info(
-            "[ClickBus] Disponível=%s | Botões=%d | Empresa=%s | Preços=%s | SemResultados=%s",
+            "[ClickBus] Disponível=%s | Botões=%d | Empresa=%s | Opções=%s | Preços=%s | SemResultados=%s",
             disponivel,
             len(botoes),
             mencoes,
+            [f"{o['tipo']} ({o['preco']})" for o in opcoes],
             precos,
             sem_resultados,
         )
@@ -418,10 +508,25 @@ def enviar_alerta_telegram(resultado: dict[str, Any], motivo: str = "nova") -> b
     url = html.escape(resultado["url"], quote=True)
     data_viagem = html.escape(_extrair_data_viagem(resultado["url"]))
     empresas = html.escape(_normalizar_empresas(resultado.get("mencoes_empresa", [])))
+    opcoes = resultado.get("opcoes", [])
     precos = resultado.get("precos", [])
-    precos_formatados = html.escape(", ".join(precos)) if precos else "Não identificado na listagem"
     horario_verificacao = datetime.now(FUSO_BRASILIA).strftime("%d/%m/%Y %H:%M:%S")
     titulo = "💰 <b>PREÇOS ATUALIZADOS!</b>" if motivo == "preco_alterado" else "🚌 <b>PASSAGEM LIBERADA!</b>"
+
+    if opcoes:
+        linhas_opcoes = []
+        for op in opcoes:
+            tipo = html.escape(op["tipo"])
+            preco = html.escape(op["preco"])
+            hora = html.escape(op["horario"])
+            if hora:
+                linhas_opcoes.append(f"  • <b>{tipo}</b> ({hora}) — {preco}")
+            else:
+                linhas_opcoes.append(f"  • <b>{tipo}</b> — {preco}")
+        bloco_valores = "💺 <b>Tipos e preços:</b>\n" + "\n".join(linhas_opcoes)
+    else:
+        precos_formatados = html.escape(", ".join(precos)) if precos else "Não identificado na listagem"
+        bloco_valores = f"💰 <b>Preços encontrados:</b> {precos_formatados}"
 
     mensagem = (
         f"{titulo}\n\n"
@@ -429,7 +534,7 @@ def enviar_alerta_telegram(resultado: dict[str, Any], motivo: str = "nova") -> b
         f"📍 <b>Trecho:</b> Brasília - DF ➔ Santa Rita de Cássia - BA\n"
         f"📅 <b>Data da viagem:</b> {data_viagem}\n"
         f"🏢 <b>Viação:</b> {empresas}\n"
-        f"💰 <b>Preços encontrados:</b> {precos_formatados}\n"
+        f"{bloco_valores}\n"
         f"🕒 <b>Verificado em:</b> {horario_verificacao}\n\n"
         f"👉 <a href=\"{url}\">Abrir página de compra</a>"
     )
